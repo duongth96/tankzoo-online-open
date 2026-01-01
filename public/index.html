@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Tank Chiến Online</title>
+    <style>
+        body { margin: 0; overflow: hidden; font-family: 'Arial', sans-serif; }
+        canvas { display: block; }
+        
+        #leaderboard {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            background-color: rgba(0, 0, 0, 0.5);
+            color: white;
+            padding: 10px;
+            border-radius: 5px;
+            width: 200px;
+            pointer-events: none; /* Let clicks pass through */
+        }
+        
+        #leaderboard h3 {
+            margin: 0 0 10px 0;
+            text-align: center;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.3);
+            padding-bottom: 5px;
+        }
+        
+        #leaderboard ul {
+            list-style: none;
+            padding: 0;
+            margin: 0;
+            max-height: 300px;
+            overflow-y: auto;
+        }
+        #leaderboard ul::-webkit-scrollbar {
+            width: 6px;
+        }
+        #leaderboard ul::-webkit-scrollbar-track {
+            background: rgba(0,0,0,0.3);
+        }
+        #leaderboard ul::-webkit-scrollbar-thumb {
+            background: rgba(255,255,255,0.5);
+            border-radius: 3px;
+        }
+        
+        #leaderboard li {
+            display: flex;
+            justify-content: space-between;
+            padding: 3px 0;
+        }
+
+        #loginOverlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.85);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            z-index: 1000;
+        }
+        #loginBox {
+            background: #fff;
+            padding: 30px;
+            border-radius: 10px;
+            text-align: center;
+            box-shadow: 0 0 20px rgba(0,0,0,0.5);
+            width: 300px;
+        }
+        #loginBox h2 {
+            margin-top: 0;
+            color: #333;
+        }
+        #playerNameInput {
+            width: 100%;
+            padding: 10px;
+            margin: 15px 0;
+            box-sizing: border-box;
+            border: 2px solid #ddd;
+            border-radius: 5px;
+            font-size: 16px;
+        }
+        #startButton {
+            background: #28a745;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            font-size: 16px;
+            border-radius: 5px;
+            cursor: pointer;
+            width: 100%;
+            transition: background 0.3s;
+        }
+        #startButton:hover {
+            background: #218838;
+        }
+        #respawnOverlay {
+            display: none;
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.7);
+            z-index: 999;
+            justify-content: center;
+            align-items: center;
+            flex-direction: column;
+            color: white;
+            font-size: 24px;
+        }
+        #respawnCount {
+            font-size: 72px;
+            font-weight: bold;
+            color: #ffcc00;
+            margin-top: 20px;
+        }
+    </style>
+</head>
+<body>
+    <div id="leaderboard">
+        <h3>Bảng Xếp Hạng</h3>
+        <ul id="leaderboardList">
+            <!-- Items will be added here via JS -->
+        </ul>
+    </div>
+
+    <div id="loginOverlay">
+        <div id="loginBox">
+            <h2>Tank Chiến Online</h2>
+            <div style="display: flex; gap: 10px; margin: 15px 0;">
+                <input type="text" id="playerNameInput" placeholder="Nhập tên của bạn" maxlength="15" autofocus style="flex: 1; margin: 0;">
+                <button id="randomNameBtn" style="width: 40px; padding: 0; cursor: pointer; background: #17a2b8; border: none; color: white; border-radius: 5px; font-size: 20px;" title="Tên ngẫu nhiên">🎲</button>
+            </div>
+            <button id="startButton">Vào Trận</button>
+        </div>
+    </div>
+
+    <div id="respawnOverlay">
+        <div>BẠN ĐÃ BỊ TIÊU DIỆT!</div>
+        <div>Hồi sinh trong:</div>
+        <div id="respawnCount">3</div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/phaser@3.60.0/dist/phaser-arcade-physics.min.js"></script>
+    <script src="/socket.io/socket.io.js"></script>
+    <script src="js/protobuf.min.js"></script>
+    <script src="js/game.js"></script>
+    
+    <script>
+        const loginOverlay = document.getElementById('loginOverlay');
+        const nameInput = document.getElementById('playerNameInput');
+        const startBtn = document.getElementById('startButton');
+        const randomBtn = document.getElementById('randomNameBtn');
+
+        // Load saved name
+        const savedName = localStorage.getItem('tank_playerName');
+        if (savedName) {
+            nameInput.value = savedName;
+        }
+
+        function generateRandomName() {
+            const adjectives = ['Mạnh Mẽ', 'Nhanh Nhẹn', 'Dũng Cảm', 'Siêu Đẳng', 'Bất Bại', 'Vui Vẻ', 'Ngầu Lòi', 'Huyền Thoại', 'Bá Đạo'];
+            const nouns = ['Tank', 'Chiến Binh', 'Xạ Thủ', 'Đại Bàng', 'Hổ Báo', 'Rồng', 'Sói', 'Sư Tử', 'Gấu'];
+            const adj = adjectives[Math.floor(Math.random() * adjectives.length)];
+            const noun = nouns[Math.floor(Math.random() * nouns.length)];
+            const num = Math.floor(Math.random() * 100);
+            return `${adj} ${noun} ${num}`;
+        }
+
+        randomBtn.addEventListener('click', () => {
+            nameInput.value = generateRandomName();
+        });
+
+        function startGame() {
+            let name = nameInput.value.trim();
+            if (!name) {
+                name = generateRandomName();
+            }
+            
+            // Save name
+            localStorage.setItem('tank_playerName', name);
+
+            loginOverlay.style.display = 'none';
+            // Call the function exposed by game.js
+            if (window.launchGame) {
+                window.launchGame(name);
+            }
+        }
+
+        startBtn.addEventListener('click', startGame);
+        nameInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') startGame();
+        });
+    </script>
+</body>
+</html>

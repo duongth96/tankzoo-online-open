@@ -1,0 +1,15 @@
+{
+  "name": "tank-dien",
+  "version": "1.0.0",
+  "description": "Multiplayer tank game using Socket.io and Phaser",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "protobufjs": "^8.0.0",
+    "socket.io": "^4.7.2"
+  }
+}
