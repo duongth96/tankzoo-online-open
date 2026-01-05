@@ -1,13 +1,19 @@
-version: '3.8'
 name: tankzoo
 services:
   server:
     build:
       context: ..
       dockerfile: Dockerfile
+    image: registry.dylanlo9x.com/tankzoo/server:0.0.1-alpha
     ports:
       - "18001:3000"
     environment:
       - PORT=3000
       - NODE_ENV=production
     restart: unless-stopped
+    networks:
+      - vps-network
+networks:
+  vps-network:
+    external: true
+    name: vps-network

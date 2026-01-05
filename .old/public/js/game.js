@@ -17,6 +17,16 @@ const config = {
     preload: preload,
     create: create,
     update: update
+  },
+  input: {
+    // keyboard: {
+    //   disableGlobalCapture: true,
+    //   capture: ['left', 'up', 'down', 'space', 'shift'] // exclude 'right'
+    // },
+    // mouse: {
+    //   disableGlobalCapture: true,  // disable right-click context menu
+    //   capture: ['left']             // only capture left mouse button
+    // }
   }
 };
 

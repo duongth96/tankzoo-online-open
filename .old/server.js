@@ -73,13 +73,17 @@ obstacleList.forEach(obs => {
 
 const powerUpTypes = ['invisible', 'multiShot', 'speed', 'damage', 'health', 'missile', 'bomb'];
 
+// Calculate desired powerup count based on players
+function getMaxPowerUps() {
+    const playerCount = Object.keys(players).length;
+    // At least 50, max 150, or 10 per player
+    return Math.max(50, Math.min(150, playerCount * 10));
+}
+
 // Helper to spawn powerup
 function spawnPowerUp() {
   try {
-    const playerCount = Object.keys(players).length;
-    // Increase density for better visibility
-    // At least 50 powerups, max 150
-    let maxPowerUps = Math.max(50, Math.min(150, playerCount * 10));
+    const maxPowerUps = getMaxPowerUps();
     
     if (Object.keys(powerUps).length >= maxPowerUps) return;
 
@@ -125,32 +129,48 @@ function spawnPowerUp() {
   }
 }
 
-// Function to handle random spawning interval
+// Function to handle spawning interval
 function startPowerUpSpawner() {
-  try {
-      const nextSpawn = Math.floor(Math.random() * 3000) + 2000; // Random 2s to 5s (Faster spawn for testing)
-      
-      // Ensure we have at least 50 powerups immediately
-      const currentCount = Object.keys(powerUps).length;
-      if (currentCount < 50) {
-          const needed = 50 - currentCount;
-          for (let i = 0; i < needed; i++) {
-              spawnPowerUp();
+  console.log('Starting PowerUp Spawner...');
+  
+  // Use setInterval for robust looping (won't crash the loop if an error occurs inside)
+  setInterval(() => {
+      try {
+          const maxPowerUps = getMaxPowerUps();
+          const currentCount = Object.keys(powerUps).length;
+          
+          if (currentCount < maxPowerUps) {
+              // Calculate how many to spawn
+              const needed = maxPowerUps - currentCount;
+              
+              // Spawn in small batches to avoid blocking event loop if many are needed
+              // But ensure we spawn at least 1 if needed
+              const spawnBatch = Math.min(needed, 5); 
+              
+              for (let i = 0; i < spawnBatch; i++) {
+                  spawnPowerUp();
+              }
+              
+              if (needed > 0) {
+                  // console.log(`Refilling powerups: ${currentCount}/${maxPowerUps}. Added ${spawnBatch}.`);
+              }
           }
+      } catch (err) {
+          console.error('Error in startPowerUpSpawner interval:', err);
       }
-
-      setTimeout(() => {
-        // Try to spawn multiple powerups at once if low count
-        const spawnCount = Math.floor(Math.random() * 3) + 1; // 1 to 3 powerups
-        for(let i=0; i<spawnCount; i++) {
-            spawnPowerUp();
-        }
-        startPowerUpSpawner();
-      }, nextSpawn);
-  } catch (err) {
-      console.error('Error in startPowerUpSpawner:', err);
-      // Restart spawner after delay if crash
-      setTimeout(startPowerUpSpawner, 5000);
+  }, 2000); // Check every 2 seconds
+  
+  // Initial fill
+  try {
+      const max = getMaxPowerUps();
+      const current = Object.keys(powerUps).length;
+      if (current < max) {
+          const needed = max - current;
+          console.log(`Initial powerup fill: spawning ${needed} items.`);
+          for(let i=0; i<needed; i++) spawnPowerUp();
+      }
+  } catch(e) {
+      console.error("Error in initial powerup fill:", e);
   }
 }
 
