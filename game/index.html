@@ -77,6 +77,23 @@
       });
 
       installBtn.addEventListener('click', async () => {
+        // Check environment
+        const isChrome = /Chrome/.test(navigator.userAgent) && /Google Inc/.test(navigator.vendor);
+        const isAndroid = /Android/.test(navigator.userAgent);
+
+        if (!deferredPrompt) {
+          if (!isChrome) {
+             if (isAndroid) {
+                 // Try to open in Chrome on Android
+                 const url = window.location.href.replace(/^https?:\/\//, '');
+                 window.location.href = `intent://${url}#Intent;scheme=https;package=com.android.chrome;end`;
+             } else {
+                 alert("Vui lòng sử dụng trình duyệt Google Chrome để có trải nghiệm tốt nhất và cài đặt game!");
+             }
+          }
+          return;
+        }
+        
         if (deferredPrompt) {
           deferredPrompt.prompt();
           const { outcome } = await deferredPrompt.userChoice;
