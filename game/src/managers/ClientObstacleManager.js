@@ -22,9 +22,23 @@ export default class ClientObstacleManager {
 
         const obstacle = this.obstacles.create(obs.x, obs.y, texture);
         obstacle.id = obs.id;
+        obstacle.obstacleType = obs.type;
         obstacle.setDepth(2);
-        
-        // Shadow
+
+        if (obs.type === 'soft') {
+            obstacle.maxHealth = 100;
+            obstacle.currentHealth = obs.health !== undefined ? obs.health : 100;
+            
+            // Set initial alpha
+            if (obstacle.currentHealth < obstacle.maxHealth) {
+                 const alpha = Math.max(0.2, obstacle.currentHealth / obstacle.maxHealth);
+                 obstacle.setAlpha(alpha);
+             }
+         }
+         
+         obstacle.refreshBody();
+
+         // Shadow
         const shadow = this.scene.add.sprite(obs.x + 5, obs.y + 5, 'shadow');
         shadow.setDepth(1);
         shadow.scaleX = obstacle.width / 40;
@@ -39,6 +53,16 @@ export default class ClientObstacleManager {
             if (obs.shadow) obs.shadow.destroy();
             if (obs.sprite) obs.sprite.destroy();
             delete this.obstacleMap[id];
+        }
+    }
+
+    updateObstacleHealth(id, health) {
+        const obs = this.obstacleMap[id];
+        console.log('ClientObstacleManager updateHealth:', id, health, obs ? 'found' : 'not found');
+        if (obs && obs.sprite && obs.sprite.obstacleType === 'soft') {
+            obs.sprite.currentHealth = health;
+            const alpha = Math.max(0.2, health / obs.sprite.maxHealth);
+            obs.sprite.setAlpha(alpha);
         }
     }
 

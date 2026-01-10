@@ -5,12 +5,18 @@ const {
 const EVENTS = require('../constants/events');
 
 class PowerUpManager {
-    constructor(io, obstacleManager) {
+    constructor(io, obstacleManager, roomId) {
         this.io = io;
         this.obstacleManager = obstacleManager;
+        this.roomId = roomId;
         this.powerUps = {};
         this.powerUpTypes = ['invisible', 'multiShot', 'speed', 'damage', 'health', 'missile', 'bomb'];
         this.interval = null;
+    }
+
+    // Helper to emit to the specific room
+    emitToRoom(event, data) {
+        this.io.to(this.roomId).emit(event, data);
     }
 
     startSpawner(playerCountFn) {
@@ -74,7 +80,7 @@ class PowerUpManager {
             type: this.powerUpTypes[Math.floor(Math.random() * this.powerUpTypes.length)]
         };
 
-        this.io.emit(EVENTS.POWERUP_SPAWNED, this.powerUps[id]);
+        this.emitToRoom(EVENTS.POWERUP_SPAWNED, this.powerUps[id]);
     }
 
     findValidPosition() {
@@ -111,7 +117,7 @@ class PowerUpManager {
         if (this.powerUps[powerUpId]) {
             const type = this.powerUps[powerUpId].type;
             delete this.powerUps[powerUpId];
-            this.io.emit(EVENTS.POWERUP_REMOVED, powerUpId);
+            this.emitToRoom(EVENTS.POWERUP_REMOVED, powerUpId);
             return type;
         }
         return null;

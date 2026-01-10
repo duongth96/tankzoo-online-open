@@ -1,9 +1,28 @@
 const EVENTS = require('../constants/events');
 
-module.exports = (io, gameManager) => {
+module.exports = (io, roomManager) => {
     io.on(EVENTS.CONNECTION, (socket) => {
         console.log('A user connected:', socket.id);
-        
+
+        // Device Detection
+        let deviceType = socket.handshake.query.deviceType;
+        if (!deviceType) {
+            const userAgent = socket.handshake.headers['user-agent'] || '';
+            const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(userAgent);
+            deviceType = isMobile ? 'mobile' : 'pc';
+        }
+        console.log(`User ${socket.id} detected as ${deviceType}`);
+
+        // Find or Create Room
+        const roomId = roomManager.findOrCreateRoom(deviceType);
+        const gameManager = roomManager.addPlayerToRoom(socket, roomId);
+
+        if (!gameManager) {
+            console.error('Failed to join room');
+            socket.disconnect();
+            return;
+        }
+
         const playerName = socket.handshake.query.name;
         const player = gameManager.playerManager.addPlayer(socket, playerName);
 
@@ -11,20 +30,22 @@ module.exports = (io, gameManager) => {
         socket.emit(EVENTS.CURRENT_PLAYERS, gameManager.playerManager.getPlayers());
         socket.emit(EVENTS.CURRENT_POWERUPS, gameManager.powerUpManager.getPowerUps());
         socket.emit(EVENTS.CURRENT_OBSTACLES, gameManager.obstacleManager.getObstacles());
-        // We need to move mapSeed to a config or manager, currently it was global.
-        // Let's generate it in GameManager or just send a random one here.
-        // For consistency, let's just send a random one or store it in GameManager if we want it consistent.
-        // I'll assume consistency isn't strictly enforced across re-starts in this refactor unless I add it to GameManager.
-        socket.emit(EVENTS.MAP_SEED, Math.random()); 
+        
+        // Use MapManager to get the consistent map seed
+        socket.emit(EVENTS.MAP_SEED, gameManager.mapManager.getMapSeed());
 
-        socket.broadcast.emit(EVENTS.NEW_PLAYER, player);
+        // Notify room members
+        socket.to(roomId).emit(EVENTS.NEW_PLAYER, player);
 
         socket.on(EVENTS.DISCONNECT, () => {
             console.log('User disconnected:', socket.id);
-            gameManager.playerManager.removePlayer(socket.id);
+            roomManager.removePlayer(socket);
         });
 
         socket.on(EVENTS.PLAYER_MOVEMENT, (data) => {
+            // Re-fetch gameManager in case of room change? 
+            // Usually not needed if socket stays in same room scope.
+            // But let's assume gameManager reference is stable for the session.
             gameManager.playerManager.handleMovementWithSocket(socket, data);
         });
 

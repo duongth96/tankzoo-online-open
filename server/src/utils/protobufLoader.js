@@ -4,10 +4,13 @@ const path = require('path');
 let Movement, Shoot;
 
 // Adjust path to where the proto file is located relative to this file
-// server/src/utils -> ../../../public/assets/game.proto
-const PROTO_PATH = path.join(__dirname, '../../../public/assets/game.proto');
+// server/src/utils -> ../../assets/game.proto
+const PROTO_PATH = path.join(__dirname, '../../assets/game.proto');
 
 const loadProtobufs = () => {
+    if (Movement && Shoot) {
+        return Promise.resolve({ Movement, Shoot });
+    }
     return new Promise((resolve, reject) => {
         protobuf.load(PROTO_PATH, (err, root) => {
             if (err) {

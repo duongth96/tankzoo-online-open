@@ -3,132 +3,58 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Tank Chiến Online</title>
-    <style>
-        body { margin: 0; overflow: hidden; font-family: 'Arial', sans-serif; background-color: #000; }
-        canvas { display: block; }
-        
-        #leaderboard {
-            position: absolute;
-            top: 10px;
-            right: 10px;
-            background-color: rgba(0, 0, 0, 0.5);
-            color: white;
-            padding: 10px;
-            border-radius: 5px;
-            width: 200px;
-            pointer-events: none;
-            z-index: 100;
-        }
-        
-        #leaderboard h3 {
-            margin: 0 0 10px 0;
-            text-align: center;
-            border-bottom: 1px solid rgba(255, 255, 255, 0.3);
-            padding-bottom: 5px;
-        }
-        
-        #leaderboard ul {
-            list-style: none;
-            padding: 0;
-            margin: 0;
-            max-height: 300px;
-            overflow-y: auto;
-        }
-        
-        #leaderboard li {
-            display: flex;
-            justify-content: space-between;
-            padding: 3px 0;
-        }
+    <meta name="description" content="Tank Chiến Online - Một trò chơi tank chiến trực tuyến với nhiều người chơi cùng nhau." />
+    <link rel="apple-touch-icon" sizes="57x57" href="/apple-icon-57x57.png">
+    <link rel="apple-touch-icon" sizes="60x60" href="/apple-icon-60x60.png">
+    <link rel="apple-touch-icon" sizes="72x72" href="/apple-icon-72x72.png">
+    <link rel="apple-touch-icon" sizes="76x76" href="/apple-icon-76x76.png">
+    <link rel="apple-touch-icon" sizes="114x114" href="/apple-icon-114x114.png">
+    <link rel="apple-touch-icon" sizes="120x120" href="/apple-icon-120x120.png">
+    <link rel="apple-touch-icon" sizes="144x144" href="/apple-icon-144x144.png">
+    <link rel="apple-touch-icon" sizes="152x152" href="/apple-icon-152x152.png">
+    <link rel="apple-touch-icon" sizes="180x180" href="/apple-icon-180x180.png">
+    <link rel="icon" type="image/png" sizes="192x192"  href="/android-icon-192x192.png">
+    <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png">
+    <link rel="icon" type="image/png" sizes="96x96" href="/favicon-96x96.png">
+    <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png">
+    <link rel="manifest" href="manifest.json" />
 
-        #loginOverlay {
-            position: absolute;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            background: rgba(0, 0, 0, 0.85);
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            z-index: 1000;
-        }
-        #loginBox {
-            background: #fff;
-            padding: 30px;
-            border-radius: 10px;
-            text-align: center;
-            box-shadow: 0 0 20px rgba(0,0,0,0.5);
-            width: 300px;
-        }
-        #loginBox h2 {
-            margin-top: 0;
-            color: #333;
-        }
-        #playerNameInput {
-            width: 100%;
-            padding: 10px;
-            margin: 15px 0;
-            box-sizing: border-box;
-            border: 2px solid #ddd;
-            border-radius: 5px;
-            font-size: 16px;
-        }
-        #startButton {
-            background: #28a745;
-            color: white;
-            border: none;
-            padding: 10px 20px;
-            font-size: 16px;
-            border-radius: 5px;
-            cursor: pointer;
-            width: 100%;
-            transition: background 0.3s;
-        }
-        #startButton:hover {
-            background: #218838;
-        }
-        #respawnOverlay {
-            display: none;
-            position: absolute;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            background: rgba(0, 0, 0, 0.7);
-            z-index: 999;
-            justify-content: center;
-            align-items: center;
-            flex-direction: column;
-            color: white;
-            font-size: 24px;
-        }
-        #respawnCount {
-            font-size: 72px;
-            font-weight: bold;
-            color: #ffcc00;
-            margin-top: 20px;
-        }
-        /* Mobile controls overlay (optional, can be added later) */
+    <meta name="msapplication-TileColor" content="#ffffff">
+    <meta name="msapplication-TileImage" content="/ms-icon-144x144.png">
+    <meta name="theme-color" content="#ffffff">
+
+    <title>Tank Chiến Online - tankzoo.io.vn</title>
+    <style type="text/css">
+        @import url('/assets/css/home.css');
     </style>
   </head>
   <body>
     <div id="game-container"></div>
     
     <div id="leaderboard">
-        <h3>Bảng Xếp Hạng</h3>
         <ul id="leaderboardList"></ul>
+    </div>
+
+    <div id="alert-box">
+        <p>⚠️ Hãy xoay ngang điện thoại để có trải nghiệm game tốt nhất!</p>
+        <span class="close-btn" onclick="document.getElementById('alert-box').style.display='none'">&times;</span>
     </div>
 
     <div id="loginOverlay">
         <div id="loginBox">
-            <h2>Tank Chiến Online</h2>
+            <img src="/logo.png" alt="Tank Chiến Online" style="max-width: 100%; height: auto; margin-bottom: 10px;">
             <div style="display: flex; gap: 10px; margin: 15px 0;">
                 <input type="text" id="playerNameInput" placeholder="Nhập tên của bạn" maxlength="15" autofocus style="flex: 1; margin: 0;">
                 <button id="randomNameBtn" style="width: 40px; padding: 0; cursor: pointer; background: #17a2b8; border: none; color: white; border-radius: 5px; font-size: 20px;" title="Tên ngẫu nhiên">🎲</button>
             </div>
-            <button id="startButton">Vào Trận</button>
+            <div style="display: flex; gap: 10px; width: 100%;">
+                <button id="installBtn" style="flex: 1;">
+                  📲 Cài đặt game
+                </button>
+                <button id="startButton" style="flex: 1;">
+                  ▶️ Vào Trận
+                </button>
+            </div>
         </div>
     </div>
 
@@ -139,5 +65,42 @@
     </div>
 
     <script type="module" src="/src/main.js"></script>
+    <script>
+      let deferredPrompt;
+      const installBtn = document.getElementById('installBtn');
+
+      window.addEventListener('beforeinstallprompt', (e) => {
+        e.preventDefault();
+        deferredPrompt = e;
+        installBtn.style.display = 'block';
+        console.log('beforeinstallprompt fired');
+      });
+
+      installBtn.addEventListener('click', async () => {
+        if (deferredPrompt) {
+          deferredPrompt.prompt();
+          const { outcome } = await deferredPrompt.userChoice;
+          console.log(`User response to the install prompt: ${outcome}`);
+          deferredPrompt = null;
+          installBtn.style.display = 'none';
+        }
+      });
+
+      window.addEventListener('appinstalled', () => {
+        installBtn.style.display = 'none';
+        deferredPrompt = null;
+        console.log('PWA was installed');
+      });
+
+      if ('serviceWorker' in navigator) {
+        window.addEventListener('load', () => {
+          navigator.serviceWorker.register('/sw.js').then(registration => {
+            console.log('ServiceWorker registration successful with scope: ', registration.scope);
+          }, err => {
+            console.log('ServiceWorker registration failed: ', err);
+          });
+        });
+      }
+    </script>
   </body>
 </html>

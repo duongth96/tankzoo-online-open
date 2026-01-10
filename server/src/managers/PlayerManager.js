@@ -1,16 +1,22 @@
 const { 
     MAP_WIDTH, MAP_HEIGHT, DEFAULT_HEALTH, DEFAULT_DAMAGE, 
     BUFFED_DAMAGE, POWERUP_DURATION, RESPAWN_TIME,
-    MISSILE_DAMAGE, BOMB_DAMAGE, BOMB_RADIUS, BOMB_FUSE
+    MISSILE_DAMAGE, BOMB_DAMAGE, BOMB_RADIUS, BOMB_FUSE, DEFAULT_BULLET_DISTANCE
 } = require('../constants/gameConfig');
 const EVENTS = require('../constants/events');
 const { getMovement, getShoot } = require('../utils/protobufLoader');
 
 class PlayerManager {
-    constructor(io, gameManager) {
+    constructor(io, gameManager, roomId) {
         this.io = io;
         this.gameManager = gameManager;
+        this.roomId = roomId;
         this.players = {};
+    }
+
+    // Helper to emit to the specific room
+    emitToRoom(event, data) {
+        this.io.to(this.roomId).emit(event, data);
     }
 
     addPlayer(socket, name) {
@@ -38,7 +44,7 @@ class PlayerManager {
     removePlayer(socketId) {
         if (this.players[socketId]) {
             delete this.players[socketId];
-            this.io.emit(EVENTS.DISCONNECT_PLAYER, socketId);
+            this.emitToRoom(EVENTS.DISCONNECT_PLAYER, socketId);
         }
     }
 
@@ -80,7 +86,7 @@ class PlayerManager {
                 turretRotation: player.turretRotation
             };
             const buffer = Movement.encode(Movement.create(payload)).finish();
-            this.io.emit(EVENTS.PLAYER_MOVED, buffer); // Using io.emit to broadcast to all (including sender? usually broadcast)
+            this.emitToRoom(EVENTS.PLAYER_MOVED, buffer); // Using io.emit to broadcast to all (including sender? usually broadcast)
             // Original code used socket.broadcast.emit. 
             // Here I only have io. 
             // I should probably use socket.broadcast.emit in the handler or pass socket here.
@@ -90,7 +96,7 @@ class PlayerManager {
         } else {
             // Logic handled in SocketHandler to use broadcast if needed, or I emit to all.
             // Emitting to all is fine for movement usually, though wasteful for self.
-            this.io.emit(EVENTS.PLAYER_MOVED, player);
+            this.emitToRoom(EVENTS.PLAYER_MOVED, player);
         }
     }
 
@@ -125,9 +131,9 @@ class PlayerManager {
                 turretRotation: player.turretRotation
             };
             const buffer = Movement.encode(Movement.create(payload)).finish();
-            socket.broadcast.emit(EVENTS.PLAYER_MOVED, buffer);
+            socket.to(this.roomId).emit(EVENTS.PLAYER_MOVED, buffer);
         } else {
-            socket.broadcast.emit(EVENTS.PLAYER_MOVED, player);
+            socket.to(this.roomId).emit(EVENTS.PLAYER_MOVED, player);
         }
     }
 
@@ -145,6 +151,7 @@ class PlayerManager {
         }
 
         let damage = DEFAULT_DAMAGE;
+        let distance = DEFAULT_BULLET_DISTANCE;
         if (this.players[socket.id] && this.players[socket.id].damageBuff) {
             damage = BUFFED_DAMAGE;
         }
@@ -155,23 +162,29 @@ class PlayerManager {
                 x: shootData.x,
                 y: shootData.y,
                 rotation: shootData.rotation,
-                damage: damage
+                damage: damage,
+                distance: distance
             };
             const buffer = Shoot.encode(Shoot.create(payload)).finish();
-            socket.broadcast.emit(EVENTS.BULLET_FIRED, buffer);
+            this.emitToRoom(EVENTS.BULLET_FIRED, buffer);
         } else {
-            socket.broadcast.emit(EVENTS.BULLET_FIRED, {
+            this.emitToRoom(EVENTS.BULLET_FIRED, {
                 x: shootData.x,
                 y: shootData.y,
                 rotation: shootData.rotation,
                 playerId: socket.id,
-                damage: damage
+                damage: damage,
+                distance: distance
             });
         }
     }
 
     handleHit(data) {
         const { playerId, damage, attackerId } = data;
+        
+        // Prevent self-damage
+        if (playerId === attackerId) return;
+
         const player = this.players[playerId];
 
         if (player && !player.isDead) {
@@ -180,7 +193,7 @@ class PlayerManager {
             if (player.health <= 0) {
                 this.killPlayer(playerId, attackerId);
             } else {
-                this.io.emit(EVENTS.PLAYER_HEALTH_UPDATE, {
+                this.emitToRoom(EVENTS.PLAYER_HEALTH_UPDATE, {
                     playerId: playerId,
                     health: player.health
                 });
@@ -193,11 +206,11 @@ class PlayerManager {
         victim.health = 0;
         victim.isDead = true;
         
-        this.io.emit(EVENTS.PLAYER_DIED, victimId);
+        this.emitToRoom(EVENTS.PLAYER_DIED, victimId);
         
         if (attackerId && this.players[attackerId]) {
             this.players[attackerId].score += 1;
-            this.io.emit(EVENTS.SCORE_UPDATE, {
+            this.emitToRoom(EVENTS.SCORE_UPDATE, {
                 playerId: attackerId,
                 score: this.players[attackerId].score
             });
@@ -213,7 +226,7 @@ class PlayerManager {
             p.health = DEFAULT_HEALTH;
             p.x = Math.floor(Math.random() * (MAP_WIDTH - 100)) + 50;
             p.y = Math.floor(Math.random() * (MAP_HEIGHT - 100)) + 50;
-            this.io.emit(EVENTS.PLAYER_RESPAWNED, p);
+            this.emitToRoom(EVENTS.PLAYER_RESPAWNED, p);
         }
     }
 
@@ -232,18 +245,18 @@ class PlayerManager {
         }
 
         // Effect Logic
-        this.io.to(socketId).emit(EVENTS.APPLY_POWERUP, type);
+        this.emitToRoom(EVENTS.APPLY_POWERUP, { playerId: socketId, type: type });
 
         if (type === 'health') {
             player.health += 50;
             if (player.health > player.maxHealth) player.health = player.maxHealth;
-            this.io.emit(EVENTS.PLAYER_HEALTH_UPDATE, { playerId: socketId, health: player.health });
+            this.emitToRoom(EVENTS.PLAYER_HEALTH_UPDATE, { playerId: socketId, health: player.health });
         } else if (type === 'speed') {
             player.speedBuff = true;
             setTimeout(() => {
                 if (this.players[socketId]) {
                     this.players[socketId].speedBuff = false;
-                    this.io.to(socketId).emit(EVENTS.REMOVE_POWERUP_EFFECT, 'speed');
+                    this.emitToRoom(EVENTS.REMOVE_POWERUP_EFFECT, { playerId: socketId, type: 'speed' });
                 }
             }, POWERUP_DURATION);
         } else if (type === 'damage') {
@@ -251,16 +264,25 @@ class PlayerManager {
             setTimeout(() => {
                 if (this.players[socketId]) {
                     this.players[socketId].damageBuff = false;
-                    this.io.to(socketId).emit(EVENTS.REMOVE_POWERUP_EFFECT, 'damage');
+                    this.emitToRoom(EVENTS.REMOVE_POWERUP_EFFECT, { playerId: socketId, type: 'damage' });
                 }
             }, POWERUP_DURATION);
         } else if (type === 'invisible') {
             player.alpha = 0;
-            this.io.emit(EVENTS.PLAYER_ALPHA_CHANGED, { playerId: socketId, alpha: 0 }); // broadcast to all? Original: broadcast then emit? No, just all need to know.
+            this.emitToRoom(EVENTS.PLAYER_ALPHA_CHANGED, { playerId: socketId, alpha: 0 });
             setTimeout(() => {
                 if (this.players[socketId]) {
                     player.alpha = 1;
-                    this.io.emit(EVENTS.PLAYER_ALPHA_CHANGED, { playerId: socketId, alpha: 1 });
+                    this.emitToRoom(EVENTS.PLAYER_ALPHA_CHANGED, { playerId: socketId, alpha: 1 });
+                    this.emitToRoom(EVENTS.REMOVE_POWERUP_EFFECT, { playerId: socketId, type: 'invisible' });
+                }
+            }, POWERUP_DURATION);
+        } else if (type === 'multiShot') {
+            player.multiShotBuff = true;
+            setTimeout(() => {
+                if (this.players[socketId]) {
+                    this.players[socketId].multiShotBuff = false;
+                    this.emitToRoom(EVENTS.REMOVE_POWERUP_EFFECT, { playerId: socketId, type: 'multiShot' });
                 }
             }, POWERUP_DURATION);
         }
@@ -281,7 +303,7 @@ class PlayerManager {
                     playerId: socketId,
                     damage: MISSILE_DAMAGE
                 };
-                this.io.emit(EVENTS.MISSILE_FIRED, missileData);
+                this.emitToRoom(EVENTS.MISSILE_FIRED, missileData);
             } else if (itemType === 'bomb') {
                 const bombId = Math.random().toString(36).substr(2, 9);
                 const bombData = {
@@ -290,7 +312,7 @@ class PlayerManager {
                     y: player.y,
                     playerId: socketId
                 };
-                this.io.emit(EVENTS.BOMB_DROPPED, bombData);
+                this.emitToRoom(EVENTS.BOMB_DROPPED, bombData);
 
                 setTimeout(() => {
                     this.handleBombExplosion(bombId, bombData.x, bombData.y, socketId);
@@ -300,7 +322,7 @@ class PlayerManager {
     }
 
     handleBombExplosion(bombId, x, y, attackerId) {
-        this.io.emit(EVENTS.BOMB_EXPLODED, { id: bombId, x, y });
+        this.emitToRoom(EVENTS.BOMB_EXPLODED, { id: bombId, x, y });
         
         // Damage Players
         Object.keys(this.players).forEach(pId => {
@@ -312,7 +334,7 @@ class PlayerManager {
                     if (p.health <= 0) {
                         this.killPlayer(pId, attackerId);
                     } else {
-                        this.io.emit(EVENTS.PLAYER_HEALTH_UPDATE, { playerId: pId, health: p.health });
+                        this.emitToRoom(EVENTS.PLAYER_HEALTH_UPDATE, { playerId: pId, health: p.health });
                     }
                 }
             }

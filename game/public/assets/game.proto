@@ -8,6 +8,8 @@ message Movement {
     float y = 3;
     float rotation = 4;
     float turretRotation = 5;
+    float vx = 6;
+    float vy = 7;
 }
 
 message Shoot {
@@ -16,4 +18,5 @@ message Shoot {
     float y = 3;
     float rotation = 4;
     float damage = 5;
+    float distance = 6;
 }

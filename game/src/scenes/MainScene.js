@@ -2,9 +2,11 @@ import Phaser from 'phaser';
 import { socketClient } from '../utils/socket';
 import { EVENTS } from '../constants/events';
 import protobuf from 'protobufjs';
+import VirtualJoystick from 'phaser3-rex-plugins/plugins/virtualjoystick.js';
 import ClientPlayerManager from '../managers/ClientPlayerManager';
 import ClientObstacleManager from '../managers/ClientObstacleManager';
 import ClientPowerUpManager from '../managers/ClientPowerUpManager';
+import ClientMapManager from '../managers/ClientMapManager';
 
 export default class MainScene extends Phaser.Scene {
     constructor() {
@@ -14,6 +16,11 @@ export default class MainScene extends Phaser.Scene {
     }
 
     create() {
+        // Detect mobile device
+        this.isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+        console.log('Is Mobile:', this.isMobile);
+
+        this.clientMapManager = new ClientMapManager(this);
         this.playerManager = new ClientPlayerManager(this);
         this.obstacleManager = new ClientObstacleManager(this);
         this.powerUpManager = new ClientPowerUpManager(this);
@@ -24,14 +31,43 @@ export default class MainScene extends Phaser.Scene {
         this.setupInput();
         this.setupCamera();
         
-        protobuf.load("/assets/game.proto", (err, root) => {
-            if (err) {
-                console.error("Protobuf load error:", err);
-                return;
-            }
-            this.Movement = root.lookupType("game.Movement");
-            this.Shoot = root.lookupType("game.Shoot");
+        // Launch UI Scene
+        this.scene.launch('UIScene');
+        
+        // Listen for Mobile Shoot event from UIScene
+        this.events.on('mobileShoot', () => {
+            this.fireBullet(this.input.activePointer);
         });
+
+        // Listen for Mobile Item Usage from UIScene
+        this.events.on('useItem', (type) => {
+            socketClient.emit(EVENTS.USE_ITEM, type);
+        });
+        
+        // Initialize map immediately if seed was received before scene started
+        const bufferedSeed = socketClient.getMapSeed && socketClient.getMapSeed();
+        if (bufferedSeed !== null && bufferedSeed !== undefined) {
+            this.clientMapManager.init(bufferedSeed);
+            this.clientMapManager.generateMap();
+        }
+        
+        // Load Protobuf from cache (loaded in PreloadScene)
+        const protoContent = this.cache.text.get('game-proto');
+        if (protoContent) {
+            try {
+                const root = protobuf.parse(protoContent).root;
+                this.Movement = root.lookupType("game.Movement");
+                this.Shoot = root.lookupType("game.Shoot");
+            } catch (err) {
+                console.error("Protobuf parse error:", err);
+            }
+        } else {
+            console.error("Game Proto not found in cache!");
+        }
+        // Throttling state
+        this.lastSentTime = 0;
+        this.lastSentVelocity = new Phaser.Math.Vector2(0, 0);
+        this.lastSentTurretRotation = 0;
     }
 
     setupGraphics() {
@@ -147,48 +183,186 @@ export default class MainScene extends Phaser.Scene {
         this.bullets = this.physics.add.group();
         this.missiles = this.physics.add.group();
         this.bombs = this.physics.add.group();
+        this.physics.add.collider(this.bullets, this.obstacleManager.getGroup(), this.handleBulletObstacleCollision, null, this);
+        
+        // Add collision between bullets and remote players for visual feedback
+        this.physics.add.overlap(this.bullets, this.playerManager.getRemoteGroup(), (bullet, playerTank) => {
+            // Only destroy if it's NOT the attacker (prevent self-hit immediately if spawn overlaps)
+            // But usually bullet spawns outside.
+            // Also need to check if bullet is mine? 
+            // If bullet is remote, it should hit ME (handled elsewhere).
+            // If bullet is MINE, it should hit REMOTE.
+            const socket = socketClient.getSocket();
+            if (socket && bullet.attackerId === socket.id) {
+                 bullet.destroy();
+                 // We could emit PLAYER_HIT here if we wanted client-side hit detection trust,
+                 // but currently the VICTIM reports the hit.
+                 // So this is purely for visual "bullet stops on tank" effect.
+            } else if (bullet.attackerId !== playerTank.playerId) {
+                 // Remote bullet hitting remote tank (visual only)
+                 bullet.destroy();
+            }
+        }, null, this);
     }
 
     setupInput() {
         this.cursors = this.input.keyboard.createCursorKeys();
         this.input.on('pointerdown', (pointer) => {
-            this.fireBullet(pointer);
+            // Only fire if not clicking on UI elements (like joystick or buttons)
+            // But checking that is tricky without proper UI manager.
+            // For now, if mobile, rely on button. If PC, click anywhere.
+            if (!this.isMobile) {
+                this.fireBullet(pointer);
+            }
         });
         
-        this.input.keyboard.on('keydown-Z', () => {
+        this.input.keyboard.on('keydown-SPACE', () => {
+            this.fireBullet(this.input.activePointer);
+        });
+
+        this.input.keyboard.on('keydown-ONE', () => {
             socketClient.emit(EVENTS.USE_ITEM, 'missile');
         });
-        this.input.keyboard.on('keydown-X', () => {
+        this.input.keyboard.on('keydown-TWO', () => {
             socketClient.emit(EVENTS.USE_ITEM, 'bomb');
+        });
+
+        // Debug: Toggle Mobile Mode with 'P'
+        this.input.keyboard.on('keydown-P', () => {
+            this.isMobile = !this.isMobile;
+            console.log('Mobile Mode toggled:', this.isMobile);
+            
+            // Re-run setupMobileControls logic
+            if (this.isMobile) {
+                this.setupMobileControls();
+            } else {
+                if (this.joyStick) {
+                    this.joyStick.destroy();
+                    this.joyStick = null;
+                }
+                if (this.shootBtn) {
+                    this.shootBtn.destroy();
+                    this.shootBtn = null;
+                }
+            }
+        });
+
+        // Mobile Fullscreen & Orientation
+        if (this.isMobile) {
+            this.input.on('pointerdown', () => {
+                if (this.scale.fullscreen && !this.scale.isFullscreen) {
+                    this.scale.startFullscreen();
+                }
+            });
+            
+            // Lock orientation if supported (mostly Android with PWA/Chrome)
+            if (screen.orientation && screen.orientation.lock) {
+                screen.orientation.lock('landscape').catch(() => {});
+            }
+        }
+    }
+
+    setupMobileControls() {
+        if (!this.isMobile) return;
+        
+        // Cleanup existing if any (to prevent duplicates on toggle)
+        if (this.joyStick) this.joyStick.destroy();
+        if (this.shootBtn) this.shootBtn.destroy();
+
+        // Virtual Joystick (Left)
+        // Ensure we add base/thumb to scene but keep them fixed to camera
+        const base = this.add.circle(0, 0, 60, 0x888888).setAlpha(0.5).setDepth(100).setScrollFactor(0);
+        const thumb = this.add.circle(0, 0, 30, 0xcccccc).setAlpha(0.8).setDepth(101).setScrollFactor(0);
+
+        this.joyStick = new VirtualJoystick(this, {
+            x: 100,
+            y: this.cameras.main.height - 100,
+            radius: 60,
+            base: base,
+            thumb: thumb,
+            dir: '8dir',
+            forceMin: 16,
+            enable: true
+        });
+
+        // Shoot Button (Right)
+        const shootBtnRadius = 40;
+        const shootBtnX = this.cameras.main.width - 80;
+        const shootBtnY = this.cameras.main.height - 80;
+        
+        this.shootBtn = this.add.circle(shootBtnX, shootBtnY, shootBtnRadius, 0xff0000)
+            .setAlpha(0.6)
+            .setScrollFactor(0)
+            .setInteractive()
+            .setDepth(100);
+            
+        this.shootBtn.on('pointerdown', () => {
+            this.shootBtn.setAlpha(0.9);
+            this.fireBullet(this.input.activePointer);
+        });
+
+        this.shootBtn.on('pointerup', () => {
+            this.shootBtn.setAlpha(0.6);
+        });
+        
+        this.shootBtn.on('pointerout', () => {
+            this.shootBtn.setAlpha(0.6);
         });
     }
 
     setupCamera() {
         this.cameras.main.setBounds(0, 0, this.mapWidth, this.mapHeight);
         this.physics.world.setBounds(0, 0, this.mapWidth, this.mapHeight);
+        if (this.isMobile) {
+            this.cameras.main.setZoom(1); // Zoom in to make objects bigger on high res mobile screen
+        }
     }
 
     fireBullet(pointer) {
+        const now = this.time.now;
+        if (now < this.lastFired + this.fireRate) {
+            return;
+        }
+        this.lastFired = now;
+
         const localPlayer = this.playerManager.localPlayer;
         if (localPlayer && localPlayer.tank && !localPlayer.tank.isDead) {
             const tank = localPlayer.tank;
-            const angle = Phaser.Math.Angle.Between(tank.x, tank.y, pointer.worldX, pointer.worldY);
-            
-            if (this.Shoot) {
-                const payload = {
-                    x: tank.x + Math.cos(angle) * 30,
-                    y: tank.y + Math.sin(angle) * 30,
-                    rotation: angle
-                };
-                const buffer = this.Shoot.encode(this.Shoot.create(payload)).finish();
-                socketClient.emit(EVENTS.PLAYER_SHOOT, buffer);
+            let baseAngle;
+
+            if (this.isMobile) {
+                // Mobile: Shoot in direction of tank facing
+                baseAngle = tank.rotation;
             } else {
-                socketClient.emit(EVENTS.PLAYER_SHOOT, {
-                    x: tank.x + Math.cos(angle) * 30,
-                    y: tank.y + Math.sin(angle) * 30,
-                    rotation: angle
-                });
+                // Desktop: Shoot towards mouse
+                baseAngle = Phaser.Math.Angle.Between(tank.x, tank.y, pointer.worldX, pointer.worldY);
             }
+            
+            const offset = 40; // Turret length (30) + extra to avoid overlap
+            
+            const angles = [baseAngle];
+            if (localPlayer.multiShotBuff) {
+                angles.push(baseAngle - 0.35); // ~20 degrees
+                angles.push(baseAngle + 0.35);
+            }
+
+            angles.forEach(angle => {
+                if (this.Shoot) {
+                    const payload = {
+                        x: tank.x + Math.cos(angle) * offset,
+                        y: tank.y + Math.sin(angle) * offset,
+                        rotation: angle
+                    };
+                    const buffer = this.Shoot.encode(this.Shoot.create(payload)).finish();
+                    socketClient.emit(EVENTS.PLAYER_SHOOT, buffer);
+                } else {
+                    socketClient.emit(EVENTS.PLAYER_SHOOT, {
+                        x: tank.x + Math.cos(angle) * offset,
+                        y: tank.y + Math.sin(angle) * offset,
+                        rotation: angle
+                    });
+                }
+            });
         }
     }
 
@@ -196,8 +370,44 @@ export default class MainScene extends Phaser.Scene {
         const socket = socketClient.getSocket();
         if (!socket) return;
 
+        // Consume any initial state buffered before listeners were registered
+        const initial = socketClient.consumeInitialState ? socketClient.consumeInitialState() : {};
+        if (initial.players) {
+            window.allPlayersData = initial.players;
+            this.updateLeaderboard();
+            Object.keys(initial.players).forEach((id) => {
+                if (initial.players[id].playerId === socket.id) {
+                    const p = this.playerManager.addPlayer(initial.players[id], true);
+                    this.physics.add.collider(p.tank, this.obstacleManager.getGroup());
+                    this.physics.add.overlap(p.tank, this.powerUpManager.getGroup(), (tank, powerUp) => {
+                        socketClient.emit(EVENTS.POWERUP_COLLECTED, powerUp.id);
+                    }, null, this);
+                    if (initial.players[id].inventory) {
+                         this.events.emit('updateInventory', initial.players[id].inventory);
+                    }
+                } else {
+                    this.playerManager.addPlayer(initial.players[id], false);
+                }
+            });
+        }
+        if (initial.obstacles) {
+            Object.keys(initial.obstacles).forEach((id) => {
+                this.obstacleManager.displayObstacle(initial.obstacles[id]);
+            });
+        }
+        if (initial.powerUps) {
+            Object.keys(initial.powerUps).forEach((id) => {
+                this.powerUpManager.displayPowerUp(initial.powerUps[id]);
+            });
+        }
+        if (initial.mapSeed !== null && initial.mapSeed !== undefined) {
+            this.clientMapManager.init(initial.mapSeed);
+            this.clientMapManager.generateMap();
+        }
+        
         socket.on(EVENTS.MAP_SEED, (seed) => {
-            this.generateBackground(seed);
+            this.clientMapManager.init(seed);
+            this.clientMapManager.generateMap();
         });
 
         socket.on(EVENTS.CURRENT_PLAYERS, (players) => {
@@ -212,6 +422,10 @@ export default class MainScene extends Phaser.Scene {
                     this.physics.add.overlap(p.tank, this.powerUpManager.getGroup(), (tank, powerUp) => {
                         socketClient.emit(EVENTS.POWERUP_COLLECTED, powerUp.id);
                     }, null, this);
+                    if (players[id].inventory) {
+                         if (this.missileText) this.missileText.setText(`1: ${players[id].inventory.missile || 0}`);
+                         if (this.bombText) this.bombText.setText(`2: ${players[id].inventory.bomb || 0}`);
+                    }
                 } else {
                     this.playerManager.addPlayer(players[id], false);
                 }
@@ -251,11 +465,22 @@ export default class MainScene extends Phaser.Scene {
             this.playerManager.updateHealth(data.playerId, data.health);
         });
 
+        socket.on(EVENTS.PLAYER_ALPHA_CHANGED, (data) => {
+            this.playerManager.updatePlayerAlpha(data.playerId, data.alpha);
+        });
+
         socket.on(EVENTS.PLAYER_DIED, (playerId) => {
+            console.log('PLAYER_DIED event received for:', playerId);
             if (socket.id === playerId) {
+                 console.log('Local player died, showing respawn overlay');
                  this.playerManager.handleDeath(playerId);
-                 document.getElementById('respawnOverlay').style.display = 'flex';
-                 this.startRespawnTimer();
+                 const overlay = document.getElementById('respawnOverlay');
+                 if (overlay) {
+                     overlay.style.display = 'flex';
+                     this.startRespawnTimer();
+                 } else {
+                     console.error('Respawn overlay not found!');
+                 }
             } else {
                 this.playerManager.handleDeath(playerId);
             }
@@ -279,6 +504,11 @@ export default class MainScene extends Phaser.Scene {
         socket.on(EVENTS.OBSTACLE_REMOVED, (id) => {
             this.obstacleManager.removeObstacle(id);
         });
+        
+        socket.on(EVENTS.OBSTACLE_HEALTH_UPDATE, (data) => {
+            console.log('MainScene updateObstacleHealth:', data);
+            this.obstacleManager.updateObstacleHealth(data.id, data.health);
+        });
 
         socket.on(EVENTS.CURRENT_POWERUPS, (powerUps) => {
             Object.keys(powerUps).forEach((id) => {
@@ -293,6 +523,178 @@ export default class MainScene extends Phaser.Scene {
         socket.on(EVENTS.POWERUP_REMOVED, (id) => {
             this.powerUpManager.removePowerUp(id);
         });
+
+        socket.on(EVENTS.APPLY_POWERUP, (data) => {
+            const { playerId, type } = data;
+            this.playerManager.applyPowerUpEffect(playerId, type);
+            
+            if (this.playerManager.localPlayer && playerId === socket.id) {
+                if (type === 'speed') {
+                    this.playerManager.localPlayer.speedBuff = true;
+                } else if (type === 'damage') {
+                    this.playerManager.localPlayer.damageBuff = true;
+                } else if (type === 'invisible') {
+                    this.playerManager.localPlayer.invisibleBuff = true;
+                } else if (type === 'multiShot') {
+                    this.playerManager.localPlayer.multiShotBuff = true;
+                }
+            }
+        });
+
+        socket.on(EVENTS.REMOVE_POWERUP_EFFECT, (data) => {
+            const { playerId, type } = data;
+            this.playerManager.removePowerUpEffect(playerId, type);
+
+            if (this.playerManager.localPlayer && playerId === socket.id) {
+                if (type === 'speed') {
+                    this.playerManager.localPlayer.speedBuff = false;
+                } else if (type === 'damage') {
+                    this.playerManager.localPlayer.damageBuff = false;
+                } else if (type === 'invisible') {
+                    this.playerManager.localPlayer.invisibleBuff = false;
+                } else if (type === 'multiShot') {
+                    this.playerManager.localPlayer.multiShotBuff = false;
+                }
+            }
+        });
+
+        socket.on(EVENTS.MISSILE_FIRED, (data) => {
+            this.handleMissileFired(data);
+        });
+
+        socket.on(EVENTS.BOMB_DROPPED, (data) => {
+            this.handleBombDropped(data);
+        });
+
+        socket.on(EVENTS.BOMB_EXPLODED, (data) => {
+            this.handleBombExploded(data);
+        });
+
+        socket.on(EVENTS.INVENTORY_UPDATE, (inventory) => {
+            this.events.emit('updateInventory', inventory);
+        });
+    }
+
+    handleMissileFired(data) {
+        const missile = this.missiles.create(data.x, data.y, 'powerup_missile');
+        if (missile) {
+            missile.setRotation(data.rotation + Math.PI / 2); // Rotate to face direction (texture points Up, Phaser needs Right)
+            missile.setDepth(5);
+            missile.damage = data.damage || 50;
+            missile.attackerId = data.playerId;
+            missile.body.setSize(16, 16);
+            
+            this.physics.velocityFromRotation(data.rotation, 400, missile.body.velocity);
+
+            // Add collision with local player if not attacker
+            const localPlayer = this.playerManager.localPlayer;
+            if (localPlayer && localPlayer.tank && localPlayer.id !== data.playerId) {
+                this.physics.add.overlap(localPlayer.tank, missile, () => {
+                    this.explodeMissile(missile);
+                }, null, this);
+            }
+
+            // Add collision with obstacles
+            this.physics.add.collider(missile, this.obstacleManager.getGroup(), () => {
+                this.explodeMissile(missile);
+            });
+
+            // Destroy after 3 seconds if no hit (also explode)
+            setTimeout(() => { 
+                if(missile.active) {
+                    this.explodeMissile(missile);
+                } 
+            }, 3000);
+        }
+    }
+
+    explodeMissile(missile) {
+        if (!missile.active) return;
+        
+        const x = missile.x;
+        const y = missile.y;
+        const radius = 80; // Increased explosion radius for AOE
+
+        // Visual explosion
+        this.createExplosion(x, y, radius); 
+        
+        // AOE Damage Logic
+        
+        // 1. Check Local Player (Victim reports hit)
+        const localPlayer = this.playerManager.localPlayer;
+        if (localPlayer && localPlayer.tank && !localPlayer.tank.isDead) {
+             const dist = Phaser.Math.Distance.Between(x, y, localPlayer.tank.x, localPlayer.tank.y);
+             if (dist <= radius) {
+                 socketClient.emit(EVENTS.PLAYER_HIT, { 
+                     playerId: socketClient.getSocket().id, 
+                     damage: missile.damage, 
+                     attackerId: missile.attackerId 
+                 });
+             }
+        }
+        
+        // 2. Check Soft Obstacles (Attacker reports hit)
+        const socket = socketClient.getSocket();
+        if (socket && missile.attackerId === socket.id) {
+            this.obstacleManager.obstacles.getChildren().forEach(obs => {
+                if (obs.active && obs.obstacleType === 'soft') {
+                    const dist = Phaser.Math.Distance.Between(x, y, obs.x, obs.y);
+                    if (dist <= radius) {
+                         socketClient.emit(EVENTS.OBSTACLE_HIT, {
+                            obstacleId: obs.id,
+                            damage: missile.damage
+                        });
+                    }
+                }
+            });
+        }
+
+        missile.destroy();
+    }
+
+    handleBombDropped(data) {
+        const bomb = this.bombs.create(data.x, data.y, 'powerup_bomb');
+        bomb.setDepth(4);
+        bomb.id = data.id;
+        bomb.attackerId = data.playerId;
+        
+        // Blinking effect to indicate danger
+        this.tweens.add({
+            targets: bomb,
+            alpha: 0.5,
+            scale: 1.2,
+            duration: 500,
+            yoyo: true,
+            repeat: -1
+        });
+    }
+
+    handleBombExploded(data) {
+        // Find bomb by id and destroy it
+        const bomb = this.bombs.getChildren().find(b => b.id === data.id);
+        if (bomb) {
+            this.createExplosion(bomb.x, bomb.y, 200);
+            bomb.destroy();
+        } else {
+            // If bomb not found (maybe sync issue), still show explosion at coords
+            this.createExplosion(data.x, data.y, 200);
+        }
+    }
+
+    createExplosion(x, y, radius) {
+        const explosion = this.add.circle(x, y, 10, 0xff0000);
+        this.tweens.add({
+            targets: explosion,
+            scale: radius / 10, 
+            alpha: 0,
+            duration: 500,
+            onComplete: () => explosion.destroy()
+        });
+        
+        // Camera shake for large explosions
+        if (radius > 100) {
+            this.cameras.main.shake(200, 0.01);
+        }
     }
 
     handleBulletFired(data) {
@@ -305,15 +707,20 @@ export default class MainScene extends Phaser.Scene {
 
         const bullet = this.bullets.create(bulletData.x, bulletData.y, 'bullet');
         if (bullet) {
+            bullet.startX = bulletData.x;
+            bullet.startY = bulletData.y;
             bullet.setRotation(bulletData.rotation);
             bullet.setDepth(5);
-            bullet.damage = bulletData.damage;
+            bullet.damage = Number(bulletData.damage) || 20;
+            bullet.distance = Number(bulletData.distance) || 200;
             bullet.attackerId = bulletData.playerId;
+            bullet.body.setSize(12, 12); // Increase size slightly to ensure collision
             this.physics.velocityFromRotation(bulletData.rotation, 500, bullet.body.velocity);
             
             const localPlayer = this.playerManager.localPlayer;
             if (localPlayer && localPlayer.tank) {
                 this.physics.add.overlap(localPlayer.tank, bullet, () => {
+                    if (bullet.attackerId === localPlayer.id) return;
                     bullet.destroy();
                     socketClient.emit(EVENTS.PLAYER_HIT, { 
                         playerId: socketClient.getSocket().id, 
@@ -327,37 +734,101 @@ export default class MainScene extends Phaser.Scene {
         }
     }
 
-    update() {
+    handleBulletObstacleCollision(bullet, obstacle) {
+        if (!bullet.active) return;
+        
+        console.log('Collision detected:', bullet.attackerId, obstacle.id, obstacle.obstacleType);
+
+        // Only the attacker sends the hit event to server
+        const socket = socketClient.getSocket();
+        if (socket && bullet.attackerId === socket.id) {
+            console.log('Attacker matches local player');
+            if (obstacle.obstacleType === 'soft') {
+                console.log('Emitting OBSTACLE_HIT', obstacle.id, bullet.damage);
+                socketClient.emit(EVENTS.OBSTACLE_HIT, {
+                    obstacleId: obstacle.id,
+                    damage: bullet.damage
+                });
+            }
+        }
+        
+        bullet.destroy();
+    }
+
+    // TODO:
+    // Một số bug cần fix.
+    // 1. Phía current tank hiện tại đạn đang bay xuyên qua các tank khác
+    // 2. Giới hạn khoảng cách bay của đạn là 200, chưa hoạt động chính xác.
+    // 3. Hiển thị trên mobile đang đang quá to, cần scale nhỏ xuống.
+    // 4. Fullscreen mode trên mobile, và xoay ngang màn hình.
+
+
+    update(time, delta) {
+        // Update bullets range
+        this.bullets.getChildren().forEach(bullet => {
+            if (bullet.active) {
+                const dist = Phaser.Math.Distance.Between(bullet.x, bullet.y, bullet.startX, bullet.startY);
+                if (dist > bullet.distance) {
+                    console.log('Bullet out of range:', dist, bullet.distance);
+                    bullet.destroy();
+                }
+            }
+        });
+
         const localPlayer = this.playerManager.localPlayer;
         if (localPlayer && localPlayer.tank && !localPlayer.tank.isDead) {
+            if (!this.cameras.main.deadzone) {
+                this.cameras.main.startFollow(localPlayer.tank, true, 0.1, 0.1);
+                this.cameras.main.setDeadzone(50, 50);
+            }
             const tank = localPlayer.tank;
-            const speed = 200; // or from speed buff
+            const speed = localPlayer.speedBuff ? 200 : 150; 
             tank.body.setVelocity(0);
             
             let moved = false;
             let velocity = new Phaser.Math.Vector2();
 
-            if (this.cursors.left.isDown || this.input.keyboard.addKey('A').isDown) {
-                velocity.x = -1;
-            } else if (this.cursors.right.isDown || this.input.keyboard.addKey('D').isDown) {
-                velocity.x = 1;
-            }
+            const uiScene = this.scene.get('UIScene');
+            const joyStick = uiScene ? uiScene.joyStick : null;
 
-            if (this.cursors.up.isDown || this.input.keyboard.addKey('W').isDown) {
-                velocity.y = -1;
-            } else if (this.cursors.down.isDown || this.input.keyboard.addKey('S').isDown) {
-                velocity.y = 1;
+            // Analog movement for mobile joystick
+            if (joyStick && joyStick.force > 0) {
+                velocity.setToPolar(joyStick.rotation, speed);
+            } else {
+                if (this.cursors.left.isDown || this.input.keyboard.addKey('A').isDown) {
+                    velocity.x = -1;
+                } else if (this.cursors.right.isDown || this.input.keyboard.addKey('D').isDown) {
+                    velocity.x = 1;
+                }
+
+                if (this.cursors.up.isDown || this.input.keyboard.addKey('W').isDown) {
+                    velocity.y = -1;
+                } else if (this.cursors.down.isDown || this.input.keyboard.addKey('S').isDown) {
+                    velocity.y = 1;
+                }
+                
+                if (velocity.length() > 0) {
+                    velocity.normalize().scale(speed);
+                }
             }
 
             if (velocity.length() > 0) {
-                velocity.normalize().scale(speed);
                 tank.setVelocity(velocity.x, velocity.y);
                 tank.setRotation(velocity.angle());
                 moved = true;
             }
 
             const pointer = this.input.activePointer;
-            const angle = Phaser.Math.Angle.Between(tank.x, tank.y, pointer.worldX, pointer.worldY);
+            let angle;
+
+            if (this.isMobile) {
+                // Mobile: Turret locks to tank body rotation (or movement direction)
+                // If moving, face movement. If stopped, keep last tank rotation.
+                angle = tank.rotation;
+            } else {
+                // Desktop: Turret follows mouse
+                angle = Phaser.Math.Angle.Between(tank.x, tank.y, pointer.worldX, pointer.worldY);
+            }
             
             // Access turret via player data
             if (localPlayer.turret) {
@@ -378,29 +849,58 @@ export default class MainScene extends Phaser.Scene {
                 this.playerManager.updateHealthBar(localPlayer.healthBar, localPlayer.health, tank.x, tank.y);
             }
 
-            if (moved || this.lastTurretRotation !== angle) {
-                this.lastTurretRotation = angle;
+            // Throttling Logic
+            const now = time;
+            const THROTTLE_INTERVAL = 50; // 50ms = 20 updates/sec
+
+            // Check if velocity changed significantly (including stopping)
+            // Note: velocity is already scaled by speed if moving, or 0 if not.
+            const velocityChanged = !this.lastSentVelocity.equals(velocity);
+            
+            // Check if turret rotation changed significantly
+            const rotationChanged = Math.abs(angle - this.lastSentTurretRotation) > 0.05;
+
+            const timeToUpdate = (now - this.lastSentTime) > THROTTLE_INTERVAL;
+
+            // We send if:
+            // 1. Velocity changed (started/stopped/changed direction) - IMMEDIATE
+            // 2. Turret rotated AND enough time passed - THROTTLED
+            // 3. Moving AND enough time passed (position sync) - THROTTLED
+            
+            let shouldSend = false;
+            
+            if (velocityChanged) {
+                shouldSend = true;
+            } else if ((moved || rotationChanged) && timeToUpdate) {
+                shouldSend = true;
+            }
+
+            if (shouldSend) {
+                this.lastSentTime = now;
+                this.lastSentVelocity.copy(velocity);
+                this.lastSentTurretRotation = angle;
+                
+                const payload = {
+                    playerId: socketClient.getSocket().id,
+                    x: tank.x,
+                    y: tank.y,
+                    rotation: tank.rotation,
+                    turretRotation: angle,
+                    vx: velocity.x,
+                    vy: velocity.y
+                };
                 
                 if (this.Movement) {
-                    const payload = {
-                        playerId: socketClient.getSocket().id,
-                        x: tank.x,
-                        y: tank.y,
-                        rotation: tank.rotation,
-                        turretRotation: angle
-                    };
                     const buffer = this.Movement.encode(this.Movement.create(payload)).finish();
                     socketClient.emit(EVENTS.PLAYER_MOVEMENT, buffer);
                 } else {
-                    socketClient.emit(EVENTS.PLAYER_MOVEMENT, {
-                        x: tank.x,
-                        y: tank.y,
-                        rotation: tank.rotation,
-                        turretRotation: angle
-                    });
+                    socketClient.emit(EVENTS.PLAYER_MOVEMENT, payload);
                 }
             }
         }
+        
+        // Update remote players interpolation
+        this.playerManager.update(time, delta);
     }
 
     generateBackground(seed) {

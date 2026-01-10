@@ -8,7 +8,7 @@ export default class PreloadScene extends Phaser.Scene {
     preload() {
         // Load assets here if any (images, sounds)
         // Currently we generate textures in Create, but good practice to have a preload scene
-        this.load.json('game-proto', '/assets/game.proto');
+        this.load.text('game-proto', '/assets/game.proto');
     }
 
     create() {

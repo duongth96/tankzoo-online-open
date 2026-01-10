@@ -1,19 +1,33 @@
 name: tankzoo
 services:
+  game:
+    build:
+      context: ../game
+      dockerfile: Dockerfile
+    image: ${REGISTRY_URL}/tankzoo-client:${APP_VERSION}
+    # ports:
+    #   - "${GAME_PORT}:80"
+    depends_on:
+      - server
+    networks:
+      - vps-network
+    volumes:
+       - ./config/nginx.conf:/etc/nginx/conf.d/default.conf
+
   server:
     build:
-      context: ..
+      context: ../server
       dockerfile: Dockerfile
-    image: registry.dylanlo9x.com/tankzoo/server:0.0.1-alpha
-    ports:
-      - "18001:3000"
+    image: ${REGISTRY_URL}/tankzoo-server:${SERVER_VERSION}
     environment:
       - PORT=3000
       - NODE_ENV=production
-    restart: unless-stopped
+    # ports:
+    #   - "${SERVER_PORT}:3000"
     networks:
       - vps-network
+
 networks:
   vps-network:
-    external: true
     name: vps-network
+    external: true

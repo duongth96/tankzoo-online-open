@@ -2,10 +2,20 @@ const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
 const path = require('path');
-const GameManager = require('./src/managers/GameManager');
+const RoomManager = require('./src/managers/RoomManager');
+const MapManager = require('./src/managers/MapManager');
 const setupSocket = require('./src/socket/SocketHandler');
 
 const app = express();
+app.use(express.static(path.join(__dirname, 'public')));
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+app.use((req, res, next) => {
+    res.header('Access-Control-Allow-Origin', '*');
+    res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+    res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept');
+    next();
+});
 const server = http.createServer(app);
 
 const io = new Server(server, {
@@ -16,36 +26,56 @@ const io = new Server(server, {
     allowEIO3: true
 });
 
-// Serve static files
-// Priority 1: Check for new game client build (game/dist)
-// Priority 2: Fallback to old public folder (public)
-const GAME_DIST_PATH = path.join(__dirname, '../game/dist');
-const PUBLIC_PATH = path.join(__dirname, '../public');
+// Independent Server Mode
+// The server only handles Socket.IO connections and API requests.
+// Static files are served by the Client project (Vite) or a separate web server.
 
-// Check if game/dist exists
-const fs = require('fs');
-if (fs.existsSync(GAME_DIST_PATH)) {
-    console.log('Serving game client from game/dist');
-    app.use(express.static(GAME_DIST_PATH));
-    app.get('/', (req, res) => {
-        res.sendFile(path.join(GAME_DIST_PATH, 'index.html'));
-    });
-} else {
-    console.log('Serving legacy client from public');
-    app.use(express.static(PUBLIC_PATH));
-    app.get('/', (req, res) => {
-        res.sendFile(path.join(PUBLIC_PATH, 'index.html'));
-    });
-}
+// Global MapManager for API (independent of rooms for listing)
+const globalMapManager = new MapManager();
 
-// Initialize Game
-const gameManager = new GameManager(io);
-gameManager.start();
+app.get('/api/maps', (req, res) => {
+    res.json(globalMapManager.getAvailableMaps());
+});
+
+app.get('/', (req, res) => {
+    let totalPlayers = 0;
+    // Calculate total players across all rooms
+    if (roomManager && roomManager.rooms) {
+        Object.values(roomManager.rooms).forEach(room => {
+            totalPlayers += room.players.size;
+        });
+    }
+
+    res.send({
+        status: 'online',
+        message: 'Tank Dien Server is running',
+        players: totalPlayers,
+        rooms: roomManager ? Object.keys(roomManager.rooms).length : 0
+    });
+});
+
+// Initialize Room Manager
+const roomManager = new RoomManager(io);
 
 // Setup Socket
-setupSocket(io, gameManager);
+setupSocket(io, roomManager);
 
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => {
-    console.log(`Server is running on http://localhost:${PORT}`);
+server.listen(PORT, '0.0.0.0', () => {
+    const { networkInterfaces } = require('os');
+    const nets = networkInterfaces();
+    let localIp = 'localhost';
+
+    for (const name of Object.keys(nets)) {
+        for (const net of nets[name]) {
+            // Skip over non-IPv4 and internal (i.e. 127.0.0.1) addresses
+            if (net.family === 'IPv4' && !net.internal) {
+                localIp = net.address;
+                break;
+            }
+        }
+    }
+    console.log(`Server is running on:`);
+    console.log(`- Local:   http://localhost:${PORT}`);
+    console.log(`- Network: http://${localIp}:${PORT}`);
 });

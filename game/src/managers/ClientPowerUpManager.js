@@ -19,6 +19,16 @@ export default class ClientPowerUpManager {
         shadow.setDepth(1);
         
         this.powerUpMap[info.id] = { sprite: p, shadow: shadow };
+        
+        // Floating animation
+        this.scene.tweens.add({
+            targets: p,
+            y: info.y - 5,
+            duration: 1000,
+            yoyo: true,
+            repeat: -1,
+            ease: 'Sine.easeInOut'
+        });
     }
 
     removePowerUp(id) {

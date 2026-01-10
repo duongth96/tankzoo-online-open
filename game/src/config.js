@@ -1,5 +1,5 @@
 export const GameConfig = {
-    // Replace 'localhost' with your computer's local IP address (e.g., '192.168.1.5')
-    // if you want to test on a mobile device connected to the same network.
-    SERVER_URL: 'http://localhost:3000' 
+    // In production (Docker/Nginx), use relative path to let Nginx proxy handle it
+    // In development, use specific server URL
+    SERVER_URL: import.meta.env.PROD ? '' : 'http://192.168.1.145:3000'
 };

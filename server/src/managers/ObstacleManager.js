@@ -2,14 +2,20 @@ const { OBSTACLE_COUNT, MAP_WIDTH, MAP_HEIGHT } = require('../constants/gameConf
 const EVENTS = require('../constants/events');
 
 class ObstacleManager {
-    constructor(io) {
+    constructor(io, roomId) {
         this.io = io;
+        this.roomId = roomId;
         this.obstacles = {};
         this.obstacleVariants = {
             hard: ['box', 'wall_h', 'wall_v', 'corner'],
             soft: ['box', 'bush', 'barrel']
         };
         this.init();
+    }
+
+    // Helper to emit to the specific room
+    emitToRoom(event, data) {
+        this.io.to(this.roomId).emit(event, data);
     }
 
     init() {
@@ -57,9 +63,9 @@ class ObstacleManager {
             this.obstacles[obstacleId].health -= damage;
             if (this.obstacles[obstacleId].health <= 0) {
                 delete this.obstacles[obstacleId];
-                this.io.emit(EVENTS.OBSTACLE_REMOVED, obstacleId);
+                this.emitToRoom(EVENTS.OBSTACLE_REMOVED, obstacleId);
             } else {
-                this.io.emit(EVENTS.OBSTACLE_HEALTH_UPDATE, {
+                this.emitToRoom(EVENTS.OBSTACLE_HEALTH_UPDATE, {
                     id: obstacleId,
                     health: this.obstacles[obstacleId].health
                 });
