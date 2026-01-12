@@ -88,7 +88,7 @@ export default class MainScene extends Phaser.Scene {
 
         const bulletGraphics = this.make.graphics({ x: 0, y: 0, add: false });
         bulletGraphics.fillStyle(0xff0000, 1);
-        bulletGraphics.fillRect(-5, -2.5, 10, 5);
+        bulletGraphics.fillRect(0, 0, 10, 5); // Adjusted to start at 0,0 for correct texture generation
         bulletGraphics.generateTexture('bullet', 10, 5);
 
         const shadowGraphics = this.make.graphics({ x: 0, y: 0, add: false });
@@ -338,7 +338,7 @@ export default class MainScene extends Phaser.Scene {
                 baseAngle = Phaser.Math.Angle.Between(tank.x, tank.y, pointer.worldX, pointer.worldY);
             }
             
-            const offset = 40; // Turret length (30) + extra to avoid overlap
+            const offset = 45; // Increased from 30 to 45 to clearly show bullet leaving barrel (Turret length is 30)
             
             const angles = [baseAngle];
             if (localPlayer.multiShotBuff) {
@@ -467,6 +467,13 @@ export default class MainScene extends Phaser.Scene {
 
         socket.on(EVENTS.PLAYER_ALPHA_CHANGED, (data) => {
             this.playerManager.updatePlayerAlpha(data.playerId, data.alpha);
+        });
+
+        socket.on(EVENTS.SCORE_UPDATE, (data) => {
+            if (window.allPlayersData && window.allPlayersData[data.playerId]) {
+                window.allPlayersData[data.playerId].score = data.score;
+                this.updateLeaderboard();
+            }
         });
 
         socket.on(EVENTS.PLAYER_DIED, (playerId) => {
@@ -717,6 +724,11 @@ export default class MainScene extends Phaser.Scene {
             bullet.body.setSize(12, 12); // Increase size slightly to ensure collision
             this.physics.velocityFromRotation(bulletData.rotation, 500, bullet.body.velocity);
             
+            // Immediate collision check for spawn-inside-obstacle case
+            if (this.physics.overlap(bullet, this.obstacleManager.getGroup(), this.handleBulletObstacleCollision, null, this)) {
+                return;
+            }
+
             const localPlayer = this.playerManager.localPlayer;
             if (localPlayer && localPlayer.tank) {
                 this.physics.add.overlap(localPlayer.tank, bullet, () => {
