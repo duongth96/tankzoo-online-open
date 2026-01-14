@@ -68,6 +68,16 @@ export default class MainScene extends Phaser.Scene {
         this.lastSentTime = 0;
         this.lastSentVelocity = new Phaser.Math.Vector2(0, 0);
         this.lastSentTurretRotation = 0;
+        
+        // Acceleration system
+        this.acceleration = 100; // Max 100
+        this.accelerationMax = 100;
+        this.accelerationDrainRate = 10; // Per second when boosting
+        this.accelerationRegenRate = 5; // Per second when not boosting
+        this.lastAccelerationUpdate = 0;
+        this.isBoosting = false;
+        this.trailParticles = []; // Array to store trail particles
+        this.lastTrailTime = 0; // Throttle trail particle creation
     }
 
     setupGraphics() {
@@ -226,6 +236,24 @@ export default class MainScene extends Phaser.Scene {
         this.input.keyboard.on('keydown-TWO', () => {
             socketClient.emit(EVENTS.USE_ITEM, 'bomb');
         });
+
+        // Tab key for minimap
+        this.tabKey = this.input.keyboard.addKey('TAB');
+        this.tabKey.on('down', () => {
+            const uiScene = this.scene.get('UIScene');
+            if (uiScene) {
+                uiScene.showMinimap(true);
+            }
+        });
+        this.tabKey.on('up', () => {
+            const uiScene = this.scene.get('UIScene');
+            if (uiScene) {
+                uiScene.showMinimap(false);
+            }
+        });
+
+        // Shift key for boost/acceleration
+        this.shiftKey = this.input.keyboard.addKey('SHIFT');
 
         // Debug: Toggle Mobile Mode with 'P'
         this.input.keyboard.on('keydown-P', () => {
@@ -497,6 +525,8 @@ export default class MainScene extends Phaser.Scene {
             if (socket.id === playerInfo.playerId) {
                 this.playerManager.handleRespawn(playerInfo);
                 document.getElementById('respawnOverlay').style.display = 'none';
+                // Reset acceleration on respawn
+                this.acceleration = this.accelerationMax;
             } else {
                 this.playerManager.handleRespawn(playerInfo);
             }
@@ -794,7 +824,8 @@ export default class MainScene extends Phaser.Scene {
                 this.cameras.main.setDeadzone(50, 50);
             }
             const tank = localPlayer.tank;
-            const speed = localPlayer.speedBuff ? 200 : 150; 
+            let baseSpeed = localPlayer.speedBuff ? 200 : 150;
+            
             tank.body.setVelocity(0);
             
             let moved = false;
@@ -820,15 +851,49 @@ export default class MainScene extends Phaser.Scene {
                 }
                 
                 if (velocity.length() > 0) {
-                    velocity.normalize().scale(speed);
+                    velocity.normalize().scale(baseSpeed);
                 }
+            }
+            
+            // Update acceleration
+            const deltaSeconds = delta / 1000;
+            
+            // Check if boosting (Shift held, has acceleration, and moving)
+            const canBoost = this.shiftKey && this.shiftKey.isDown && this.acceleration > 0 && velocity.length() > 0;
+            
+            // Boost multiplier depends on current acceleration percentage (0-100%)
+            // At 100% acceleration, boost is 3.0x (300% speed increase)
+            // At 50% acceleration, boost is 2.0x (200% speed increase)
+            // Linear scaling based on acceleration percentage
+            const accelerationPercent = this.acceleration / this.accelerationMax;
+            const maxBoostMultiplier = 3.0; // Maximum boost at 100% acceleration (300% speed)
+            const boostMultiplier = canBoost ? (1.0 + (maxBoostMultiplier - 1.0) * accelerationPercent) : 1.0;
+            const speed = baseSpeed * boostMultiplier;
+            
+            this.isBoosting = canBoost;
+            this.updateAcceleration(deltaSeconds);
+            
+            // Apply speed multiplier to velocity
+            if (velocity.length() > 0) {
+                velocity.normalize().scale(speed);
             }
 
             if (velocity.length() > 0) {
                 tank.setVelocity(velocity.x, velocity.y);
                 tank.setRotation(velocity.angle());
                 moved = true;
+                
+                // Create trail effect when boosting (throttle to avoid too many particles)
+                if (this.isBoosting) {
+                    if (!this.lastTrailTime || this.time.now - this.lastTrailTime > 50) { // Create trail every 50ms
+                        this.createTrailParticle(tank.x, tank.y, tank.rotation);
+                        this.lastTrailTime = this.time.now;
+                    }
+                }
             }
+            
+            // Update and cleanup trail particles
+            this.updateTrailParticles(delta);
 
             const pointer = this.input.activePointer;
             let angle;
@@ -913,6 +978,14 @@ export default class MainScene extends Phaser.Scene {
         
         // Update remote players interpolation
         this.playerManager.update(time, delta);
+        
+        // Update minimap if Tab is held
+        if (this.tabKey && this.tabKey.isDown) {
+            const uiScene = this.scene.get('UIScene');
+            if (uiScene && uiScene.minimapContainer) {
+                uiScene.updateMinimap(this);
+            }
+        }
     }
 
     generateBackground(seed) {
@@ -941,5 +1014,98 @@ export default class MainScene extends Phaser.Scene {
             if (el) el.innerText = count;
             if (count <= 0) clearInterval(interval);
         }, 1000);
+    }
+
+    updateAcceleration(deltaSeconds) {
+        if (this.isBoosting && this.acceleration > 0) {
+            // Drain acceleration when boosting
+            this.acceleration = Math.max(0, this.acceleration - this.accelerationDrainRate * deltaSeconds);
+        } else {
+            // Regenerate acceleration when not boosting
+            this.acceleration = Math.min(this.accelerationMax, this.acceleration + this.accelerationRegenRate * deltaSeconds);
+        }
+        
+        // Update UI
+        const uiScene = this.scene.get('UIScene');
+        if (uiScene) {
+            uiScene.updateAccelerationBar(this.acceleration, this.accelerationMax);
+        }
+    }
+
+    createTrailParticle(x, y, rotation) {
+        // Create dashed line trail behind the tank with yellow and orange colors
+        const offsetDistance = 18; // Distance behind tank
+        const offsetX = -Math.cos(rotation) * offsetDistance;
+        const offsetY = -Math.sin(rotation) * offsetDistance;
+        
+        // Create larger line segments for dashed line effect
+        const segmentLength = 1; // Length of each dash (1px)
+        const segmentGap = 3; // Gap between dashes
+        const segmentWidth = 5; // Width of dash line (5px)
+        const numSegments = 3; // Number of dash segments
+        
+        // Perpendicular direction (for line width)
+        const perpAngle = rotation + Math.PI / 2;
+        const perpX = Math.cos(perpAngle) * segmentWidth / 2;
+        const perpY = Math.sin(perpAngle) * segmentWidth / 2;
+        
+        // Colors: yellow and orange
+        const colors = [0xffff00, 0xff8800]; // Yellow and orange
+        
+        for (let i = 0; i < numSegments; i++) {
+            const segmentOffset = i * (segmentLength + segmentGap);
+            const segX = x + offsetX - Math.cos(rotation) * segmentOffset;
+            const segY = y + offsetY - Math.sin(rotation) * segmentOffset;
+            
+            // Alternate between yellow and orange
+            const color = colors[i % colors.length];
+            
+            // Create line segment (dash)
+            const dash = this.add.graphics();
+            dash.lineStyle(segmentWidth, color, 0.9);
+            
+            // Draw a line perpendicular to tank direction
+            const startX = segX - perpX;
+            const startY = segY - perpY;
+            const endX = segX + perpX;
+            const endY = segY + perpY;
+            
+            dash.lineBetween(startX, startY, endX, endY);
+            
+            dash.setDepth(4);
+            dash.lifeTime = 2000; // 2 seconds
+            dash.startTime = this.time.now;
+            
+            // Fade out animation
+            this.tweens.add({
+                targets: dash,
+                alpha: 0,
+                duration: dash.lifeTime,
+                onComplete: () => {
+                    if (dash.active) {
+                        dash.destroy();
+                    }
+                }
+            });
+            
+            this.trailParticles.push(dash);
+        }
+    }
+
+    updateTrailParticles(delta) {
+        const now = this.time.now;
+        this.trailParticles = this.trailParticles.filter(particle => {
+            if (!particle.active) {
+                return false;
+            }
+            
+            // Remove particles that have exceeded their lifetime
+            if (now - particle.startTime >= particle.lifeTime) {
+                particle.destroy();
+                return false;
+            }
+            
+            return true;
+        });
     }
 }
